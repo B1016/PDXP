@@ -1,0 +1,1087 @@
+name: Build PDXP APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Generate PDXP project
+        run: |
+          mkdir -p app app/src/main app/src/main/java/com/pdxp/reader app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26 app/src/main/res/values
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = 'PDXP'
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.pdxp.reader'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.pdxp.reader'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+              <application android:label="PDXP" android:icon="@mipmap/ic_launcher" android:allowBackup="false" android:largeHeap="true"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW"/>
+                          <category android:name="android.intent.category.DEFAULT"/>
+                          <data android:mimeType="application/pdf"/>
+                          <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"/>
+                          <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>
+                          <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/res/values/colors.xml <<'EOF'
+          <resources><color name="pdxp_bg">#2F6FED</color></resources>
+          EOF
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/pdxp_bg"/>
+              <foreground android:drawable="@drawable/ic_book"/>
+          </adaptive-icon>
+          EOF
+          cat > app/src/main/res/drawable/ic_book.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#FFFFFF" android:pathData="M52,38C45,32.5 36,31 29,33V72C36,70 45,71.5 52,77Z"/>
+              <path android:fillColor="#FFFFFF" android:pathData="M56,38C63,32.5 72,31 79,33V72C72,70 63,71.5 56,77Z"/>
+          </vector>
+          EOF
+          cat > app/src/main/java/com/pdxp/reader/MainActivity.java <<'EOF'
+          package com.pdxp.reader;
+
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.content.res.Configuration;
+          import android.graphics.*;
+          import android.graphics.drawable.ColorDrawable;
+          import android.graphics.drawable.GradientDrawable;
+          import android.graphics.pdf.PdfRenderer;
+          import android.net.Uri;
+          import android.os.*;
+          import android.provider.Settings;
+          import android.text.*;
+          import android.text.format.DateFormat;
+          import android.text.format.Formatter;
+          import android.text.style.*;
+          import android.util.LruCache;
+          import android.util.TypedValue;
+          import android.util.Xml;
+          import android.view.*;
+          import android.widget.*;
+          import java.io.*;
+          import java.util.*;
+          import java.util.concurrent.*;
+          import java.util.zip.*;
+          import org.xmlpull.v1.XmlPullParser;
+
+          public class MainActivity extends Activity {
+              static final int A1 = 0xFF4F7CFF, A2 = 0xFF8E54E9, ED = 1, ST = 2, ET = 3, X = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE;
+              interface Job { Runnable run(ZipFile z) throws Throwable; }
+              static class E { String p, n, x; long s, m; boolean d; }
+              static class Pa { String t = ""; float pt; boolean b, bu, set; int col; Layout.Alignment al = Layout.Alignment.ALIGN_NORMAL; }
+              static class Sh { float x, y, w, h; boolean pic; String ph, rid; ArrayList<Pa> ps = new ArrayList<>(); Bitmap bm; StaticLayout lay; }
+              static class Sld { ArrayList<Sh> sh = new ArrayList<>(); int bg = 0xFFFFFFFF; }
+              static class Deck { int sw = 9144000, sh = 5143500; ArrayList<String> sl = new ArrayList<>(); }
+
+              boolean dark, libTab = true, viewing, scanning, scanned;
+              int BG, CARD, TX, SUB, LINE, si;
+              SharedPreferences sp;
+              LinearLayout root;
+              ListView list;
+              TextView title, sub, empty, tabLib, tabBrowse, cnt;
+              ArrayList<E> lib = new ArrayList<>(), items = new ArrayList<>();
+              ConcurrentHashMap<String, E> idx = new ConcurrentHashMap<>();
+              File top = Environment.getExternalStorageDirectory(), dir = top;
+              PdfRenderer pdf;
+              ExecutorService ex;
+              ZipFile deckZip;
+              Deck dk;
+              SV sv;
+
+              BaseAdapter ad = new BaseAdapter() {
+                  public int getCount() { return items.size(); }
+                  public Object getItem(int i) { return null; }
+                  public long getItemId(int i) { return i; }
+                  public View getView(int i, View v, ViewGroup g) {
+                      if (v == null) {
+                          FrameLayout w = new FrameLayout(MainActivity.this);
+                          w.setPadding(0, dp(4), 0, dp(4));
+                          LinearLayout r = new LinearLayout(MainActivity.this);
+                          r.setGravity(Gravity.CENTER_VERTICAL);
+                          r.setPadding(dp(12), dp(12), dp(12), dp(12));
+                          r.setBackground(rect(CARD, dp(18)));
+                          TextView bd = tv("", 12, Color.WHITE, true);
+                          bd.setGravity(Gravity.CENTER);
+                          r.addView(bd, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                          LinearLayout c = new LinearLayout(MainActivity.this);
+                          c.setOrientation(LinearLayout.VERTICAL);
+                          c.setPadding(dp(14), 0, 0, 0);
+                          TextView n = tv("", 15, TX, true);
+                          n.setMaxLines(2);
+                          n.setEllipsize(TextUtils.TruncateAt.END);
+                          c.addView(n);
+                          c.addView(tv("", 12, SUB, false));
+                          r.addView(c, new LinearLayout.LayoutParams(0, -2, 1));
+                          w.addView(r);
+                          v = w;
+                      }
+                      E e = items.get(i);
+                      LinearLayout r = (LinearLayout) ((FrameLayout) v).getChildAt(0);
+                      TextView bd = (TextView) r.getChildAt(0);
+                      LinearLayout c = (LinearLayout) r.getChildAt(1);
+                      bd.setText(e.d ? "DIR" : e.x.toUpperCase(Locale.ROOT));
+                      bd.setBackground(badge(e));
+                      ((TextView) c.getChildAt(0)).setText(e.n);
+                      ((TextView) c.getChildAt(1)).setText(e.d ? "Folder" : Formatter.formatShortFileSize(MainActivity.this, e.s) + "  \u2022  " + DateFormat.format("dd MMM yyyy", e.m));
+                      return v;
+                  }
+              };
+
+              @Override protected void onCreate(Bundle st) {
+                  super.onCreate(st);
+                  sp = getSharedPreferences("p", 0);
+                  dark = sp.getBoolean("dark", (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES);
+                  BG = dark ? 0xFF0F1115 : 0xFFF4F6FB;
+                  CARD = dark ? 0xFF1B1F27 : Color.WHITE;
+                  TX = dark ? 0xFFEDEFF3 : 0xFF1B1E25;
+                  SUB = dark ? 0xFF9AA3B2 : 0xFF6B7280;
+                  LINE = dark ? 0xFF2C323D : 0xFFDDE1EA;
+                  getWindow().setStatusBarColor(A1);
+                  getWindow().setNavigationBarColor(CARD);
+                  if (!dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+                  root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(BG);
+                  LinearLayout hd = new LinearLayout(this);
+                  hd.setOrientation(LinearLayout.VERTICAL);
+                  GradientDrawable hg = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{A1, A2});
+                  float rr = dp(24);
+                  hg.setCornerRadii(new float[]{0, 0, 0, 0, rr, rr, rr, rr});
+                  hd.setBackground(hg);
+                  hd.setPadding(dp(20), dp(14), dp(8), dp(20));
+                  LinearLayout row = new LinearLayout(this);
+                  row.setGravity(Gravity.CENTER_VERTICAL);
+                  title = tv("PDXP", 26, Color.WHITE, true);
+                  row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+                  row.addView(ic(dark ? "\u2600" : "\u263E", v -> { sp.edit().putBoolean("dark", !dark).apply(); recreate(); }));
+                  row.addView(ic("\u27F3", v -> { if (access()) scan(); else ask(); }));
+                  row.addView(ic("\uFF0B", v -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 2)));
+                  sub = tv("", 13, 0xCCFFFFFF, false);
+                  hd.addView(row);
+                  hd.addView(sub);
+                  list = new ListView(this);
+                  list.setDividerHeight(0);
+                  list.setFastScrollEnabled(true);
+                  list.setClipToPadding(false);
+                  list.setPadding(dp(12), dp(10), dp(12), dp(10));
+                  list.setSelector(new ColorDrawable(0));
+                  list.setAdapter(ad);
+                  list.setOnItemClickListener((a, v, i, id) -> open(items.get(i)));
+                  empty = tv("", 16, SUB, false);
+                  empty.setGravity(Gravity.CENTER);
+                  empty.setPadding(dp(24), dp(24), dp(24), dp(24));
+                  empty.setOnClickListener(v -> { if (!access()) ask(); });
+                  FrameLayout body = new FrameLayout(this);
+                  body.addView(list);
+                  body.addView(empty);
+                  list.setEmptyView(empty);
+                  LinearLayout tabs = new LinearLayout(this);
+                  tabs.setBackgroundColor(CARD);
+                  tabs.setPadding(dp(16), dp(8), dp(16), dp(8));
+                  tabLib = tab("Library");
+                  tabBrowse = tab("Browse");
+                  tabLib.setOnClickListener(v -> { libTab = true; refresh(); });
+                  tabBrowse.setOnClickListener(v -> { libTab = false; refresh(); });
+                  tabs.addView(tabLib, wt());
+                  tabs.addView(tabBrowse, wt());
+                  root.addView(hd);
+                  root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
+                  root.addView(tabs);
+                  try (BufferedReader br = new BufferedReader(new FileReader(new File(getFilesDir(), "lib.tsv")))) {
+                      for (String l; (l = br.readLine()) != null; ) {
+                          String[] a = l.split("\t");
+                          if (a.length == 3) { E e = mk(a[0], Long.parseLong(a[1]), Long.parseLong(a[2])); lib.add(e); idx.put(e.p, e); }
+                      }
+                  } catch (Exception x) { }
+                  sortLib();
+                  setContentView(root);
+                  refresh();
+                  Uri u = getIntent().getData();
+                  if (u != null) openUri(u);
+              }
+
+              @Override protected void onResume() {
+                  super.onResume();
+                  if (!viewing && !scanned && access()) { scanned = true; scan(); }
+                  else if (!viewing) refresh();
+              }
+
+              @Override protected void onDestroy() { closeAll(); super.onDestroy(); }
+
+              TextView tv(String s, int sz, int col, boolean bold) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(sz);
+                  t.setTextColor(col);
+                  if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+                  return t;
+              }
+
+              TextView ic(String s, View.OnClickListener l) {
+                  TextView t = tv(s, 22, Color.WHITE, false);
+                  t.setPadding(dp(10), dp(6), dp(10), dp(6));
+                  t.setOnClickListener(l);
+                  return t;
+              }
+
+              TextView tab(String s) {
+                  TextView t = tv(s, 15, SUB, true);
+                  t.setGravity(Gravity.CENTER);
+                  t.setPadding(0, dp(11), 0, dp(11));
+                  return t;
+              }
+
+              LinearLayout.LayoutParams wt() {
+                  LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, -2, 1);
+                  l.setMargins(dp(4), 0, dp(4), 0);
+                  return l;
+              }
+
+              GradientDrawable grad(int r) {
+                  GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{A1, A2});
+                  g.setCornerRadius(r);
+                  return g;
+              }
+
+              GradientDrawable rect(int c, int r) {
+                  GradientDrawable g = new GradientDrawable();
+                  g.setColor(c);
+                  g.setCornerRadius(r);
+                  return g;
+              }
+
+              GradientDrawable badge(E e) {
+                  int[] c = e.d ? new int[]{0xFFB0BEC5, 0xFF78909C} : e.x.equals("pdf") ? new int[]{0xFFFF7A7A, 0xFFE53935}
+                      : e.x.equals("docx") ? new int[]{0xFF6AA6FF, 0xFF1E6FD9} : e.x.equals("xlsx") ? new int[]{0xFF5BE08A, 0xFF1F9D55} : new int[]{0xFFFFB74D, 0xFFF57C00};
+                  GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, c);
+                  g.setCornerRadius(dp(14));
+                  return g;
+              }
+
+              int dp(int v) { return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()); }
+
+              void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+
+              static String ext(String n) { int i = n.lastIndexOf('.'); return i < 0 ? "" : n.substring(i + 1).toLowerCase(Locale.ROOT); }
+
+              static boolean ok(String e) { return e.equals("pdf") || e.equals("docx") || e.equals("xlsx") || e.equals("pptx"); }
+
+              static E mk(String p, long s, long m) {
+                  E e = new E();
+                  e.p = p;
+                  e.n = p.substring(p.lastIndexOf('/') + 1);
+                  e.x = ext(e.n);
+                  e.s = s;
+                  e.m = m;
+                  return e;
+              }
+
+              boolean access() {
+                  return Build.VERSION.SDK_INT >= 30 ? Environment.isExternalStorageManager()
+                      : checkSelfPermission("android.permission.READ_EXTERNAL_STORAGE") == PackageManager.PERMISSION_GRANTED;
+              }
+
+              void ask() {
+                  if (Build.VERSION.SDK_INT >= 30)
+                      startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName())));
+                  else requestPermissions(new String[]{"android.permission.READ_EXTERNAL_STORAGE"}, 1);
+              }
+
+              @Override public void onRequestPermissionsResult(int c, String[] p, int[] r) { if (access() && !scanned) { scanned = true; scan(); } }
+
+              @Override protected void onActivityResult(int rc, int res, Intent d) {
+                  if (rc == 2 && res == RESULT_OK && d != null && d.getData() != null) openUri(d.getData());
+              }
+
+              void sortLib() { Collections.sort(lib, (a, b) -> Long.compare(b.m, a.m)); }
+
+              void save() {
+                  StringBuilder sb = new StringBuilder();
+                  for (E e : lib) sb.append(e.p).append('\t').append(e.s).append('\t').append(e.m).append('\n');
+                  new Thread(() -> { try (FileWriter w = new FileWriter(new File(getFilesDir(), "lib.tsv"))) { w.write(sb.toString()); } catch (Exception x) { } }).start();
+              }
+
+              void scan() {
+                  if (scanning) return;
+                  scanning = true;
+                  refresh();
+                  new Thread(() -> {
+                      HashSet<String> seen = new HashSet<>();
+                      walk(top, seen, 0);
+                      runOnUiThread(() -> {
+                          for (Iterator<E> it = lib.iterator(); it.hasNext(); ) {
+                              E e = it.next();
+                              if (!seen.contains(e.p)) { it.remove(); idx.remove(e.p); }
+                          }
+                          scanning = false;
+                          refresh();
+                          save();
+                      });
+                  }).start();
+              }
+
+              void walk(File d, HashSet<String> seen, int depth) {
+                  File[] fs = d.listFiles();
+                  if (fs == null || depth > 12) return;
+                  ArrayList<E> fresh = new ArrayList<>();
+                  ArrayList<File> dirs = new ArrayList<>();
+                  for (File f : fs) {
+                      String n = f.getName();
+                      if (n.startsWith(".")) continue;
+                      if (f.isDirectory()) { if (!(depth == 0 && n.equals("Android"))) dirs.add(f); }
+                      else if (ok(ext(n))) {
+                          String p = f.getPath();
+                          seen.add(p);
+                          E e = idx.get(p);
+                          long sz = f.length(), mt = f.lastModified();
+                          if (e == null || e.s != sz || e.m != mt) fresh.add(mk(p, sz, mt));
+                      }
+                  }
+                  if (!fresh.isEmpty()) runOnUiThread(() -> {
+                      for (E e : fresh) { E old = idx.put(e.p, e); if (old != null) lib.remove(old); lib.add(e); }
+                      sortLib();
+                      if (libTab) refresh();
+                  });
+                  for (File f : dirs) walk(f, seen, depth + 1);
+              }
+
+              ArrayList<E> listDir() {
+                  ArrayList<E> o = new ArrayList<>();
+                  File[] fs = dir.listFiles();
+                  if (fs != null) for (File f : fs) {
+                      String n = f.getName();
+                      if (n.startsWith(".")) continue;
+                      boolean d = f.isDirectory();
+                      if (d || ok(ext(n))) { E e = mk(f.getPath(), f.length(), f.lastModified()); e.d = d; o.add(e); }
+                  }
+                  Collections.sort(o, (a, b) -> a.d != b.d ? (a.d ? -1 : 1) : a.n.compareToIgnoreCase(b.n));
+                  return o;
+              }
+
+              void refresh() {
+                  items = libTab ? lib : listDir();
+                  title.setText(libTab || dir.equals(top) ? "PDXP" : dir.getName());
+                  sub.setText(libTab ? (scanning ? "Scanning\u2026  " : "") + lib.size() + " documents" : dir.getPath());
+                  for (int k = 0; k < 2; k++) {
+                      TextView t = k == 0 ? tabLib : tabBrowse;
+                      boolean on = (k == 0) == libTab;
+                      t.setBackground(on ? grad(dp(20)) : null);
+                      t.setTextColor(on ? Color.WHITE : SUB);
+                  }
+                  empty.setText(scanning ? "Scanning\u2026" : access() ? "No documents here" : "No documents found.\nTap to allow file access.");
+                  ad.notifyDataSetChanged();
+              }
+
+              void open(E e) {
+                  if (e.d) { dir = new File(e.p); refresh(); list.setSelection(0); }
+                  else openFile(new File(e.p));
+              }
+
+              void openFile(File f) {
+                  String e = ext(f.getName());
+                  if (!f.exists()) { toast("File not found"); return; }
+                  if (e.equals("pdf")) showPdf(f);
+                  else if (e.equals("docx")) showDoc(f);
+                  else if (e.equals("xlsx")) showSheet(f);
+                  else if (e.equals("pptx")) showDeck(f);
+              }
+
+              void openUri(Uri u) {
+                  String t = String.valueOf(getContentResolver().getType(u)), n = String.valueOf(u.getLastPathSegment()).toLowerCase(Locale.ROOT);
+                  String e = t.contains("pdf") || n.endsWith(".pdf") ? "pdf"
+                      : t.contains("wordprocessingml") || n.endsWith(".docx") ? "docx"
+                      : t.contains("spreadsheetml") || n.endsWith(".xlsx") ? "xlsx"
+                      : t.contains("presentationml") || n.endsWith(".pptx") ? "pptx" : "";
+                  if (e.isEmpty()) { toast("Unsupported file"); return; }
+                  File tmp = new File(getCacheDir(), "open." + e);
+                  new Thread(() -> {
+                      try (InputStream in = getContentResolver().openInputStream(u); OutputStream o = new FileOutputStream(tmp)) {
+                          byte[] buf = new byte[16384];
+                          int k;
+                          while ((k = in.read(buf)) > 0) o.write(buf, 0, k);
+                          runOnUiThread(() -> { closeAll(); openFile(tmp); });
+                      } catch (Exception x) { runOnUiThread(() -> toast("Can't open file")); }
+                  }).start();
+              }
+
+              void viewer(String name, View content) {
+                  viewing = true;
+                  LinearLayout v = new LinearLayout(this);
+                  v.setOrientation(LinearLayout.VERTICAL);
+                  v.setBackgroundColor(BG);
+                  TextView bar = tv("\u2190   " + name, 17, Color.WHITE, true);
+                  bar.setBackground(grad(0));
+                  bar.setPadding(dp(16), dp(15), dp(16), dp(15));
+                  bar.setSingleLine();
+                  bar.setEllipsize(TextUtils.TruncateAt.END);
+                  bar.setOnClickListener(x -> onBackPressed());
+                  v.addView(bar);
+                  v.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
+                  setContentView(v);
+              }
+
+              void closeAll() {
+                  if (ex != null) { ex.shutdownNow(); ex = null; }
+                  if (pdf != null) synchronized (pdf) { try { pdf.close(); } catch (Exception e) { } pdf = null; }
+                  if (deckZip != null) { try { deckZip.close(); } catch (Exception e) { } deckZip = null; }
+                  dk = null;
+              }
+
+              @Override public void onBackPressed() {
+                  if (viewing) { viewing = false; closeAll(); setContentView(root); }
+                  else if (!libTab && !dir.equals(top) && dir.getParentFile() != null) { dir = dir.getParentFile(); refresh(); }
+                  else super.onBackPressed();
+              }
+
+              void load(File f, Job j) {
+                  TextView ld = tv("Loading\u2026", 16, SUB, false);
+                  ld.setGravity(Gravity.CENTER);
+                  viewer(f.getName(), ld);
+                  new Thread(() -> {
+                      ZipFile z = null;
+                      Runnable r;
+                      try { z = new ZipFile(f); r = j.run(z); }
+                      catch (Throwable x) { r = () -> { toast(x instanceof OutOfMemoryError ? "File too large for this device" : "Can't read this file"); onBackPressed(); }; }
+                      if (z != null && z != deckZip) try { z.close(); } catch (Exception e) { }
+                      final Runnable fr = r;
+                      runOnUiThread(() -> { if (viewing) fr.run(); });
+                  }).start();
+              }
+
+              // ---------- PDF ----------
+              void showPdf(File f) {
+                  closeAll();
+                  final PdfRenderer r;
+                  final float ratio;
+                  try {
+                      r = new PdfRenderer(ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY));
+                      PdfRenderer.Page g = r.openPage(0);
+                      ratio = g.getHeight() / (float) g.getWidth();
+                      g.close();
+                  } catch (Throwable e) { toast("Can't open this PDF"); return; }
+                  pdf = r;
+                  ex = Executors.newSingleThreadExecutor();
+                  final ExecutorService xs = ex;
+                  final int sw = getResources().getDisplayMetrics().widthPixels, W = Math.min(sw, 1000), mh = (int) (sw * ratio), cn = r.getPageCount();
+                  final LruCache<Integer, Bitmap> cache = new LruCache<>(6);
+                  ListView lv = new ListView(this);
+                  lv.setBackgroundColor(BG);
+                  lv.setDivider(new ColorDrawable(BG));
+                  lv.setDividerHeight(dp(8));
+                  lv.setFastScrollEnabled(true);
+                  lv.setAdapter(new BaseAdapter() {
+                      public int getCount() { return cn; }
+                      public Object getItem(int i) { return null; }
+                      public long getItemId(int i) { return i; }
+                      public View getView(final int i, View v, ViewGroup g) {
+                          final ImageView iv = v == null ? new ImageView(MainActivity.this) : (ImageView) v;
+                          if (v == null) { iv.setAdjustViewBounds(true); iv.setLayoutParams(new AbsListView.LayoutParams(-1, -2)); }
+                          iv.setTag(i);
+                          iv.setMinimumHeight(mh);
+                          Bitmap c = cache.get(i);
+                          iv.setImageBitmap(c);
+                          if (c == null) try {
+                              xs.execute(() -> {
+                                  if (!Integer.valueOf(i).equals(iv.getTag())) return;
+                                  final Bitmap[] o = {null};
+                                  synchronized (r) {
+                                      if (pdf != r) return;
+                                      try {
+                                          PdfRenderer.Page pg = r.openPage(i);
+                                          int h = W * pg.getHeight() / pg.getWidth();
+                                          o[0] = Bitmap.createBitmap(W, h, Bitmap.Config.RGB_565);
+                                          o[0].eraseColor(Color.WHITE);
+                                          pg.render(o[0], null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                                          pg.close();
+                                      } catch (Throwable x) { return; }
+                                  }
+                                  cache.put(i, o[0]);
+                                  runOnUiThread(() -> { if (Integer.valueOf(i).equals(iv.getTag())) iv.setImageBitmap(o[0]); });
+                              });
+                          } catch (Exception x) { }
+                          return iv;
+                      }
+                  });
+                  viewer(f.getName(), lv);
+              }
+
+              // ---------- shared XML helpers ----------
+              static String local(String n) { int i = n.indexOf(':'); return i < 0 ? n : n.substring(i + 1); }
+
+              static String at(XmlPullParser p, String k) { return p.getAttributeValue(null, k); }
+
+              static String ln(XmlPullParser p, String k) {
+                  for (int i = 0; i < p.getAttributeCount(); i++) if (local(p.getAttributeName(i)).equals(k)) return p.getAttributeValue(i);
+                  return null;
+              }
+
+              static XmlPullParser pp(InputStream in) throws Exception {
+                  XmlPullParser p = Xml.newPullParser();
+                  p.setInput(in, null);
+                  return p;
+              }
+
+              static int num(String n) { return Integer.parseInt(n.replaceAll("\\D", "")); }
+
+              static float fl(String v) { return Float.parseFloat(v); }
+
+              static int lum(int c) { return (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000; }
+
+              HashMap<String, String> rels(ZipFile z, String path) {
+                  HashMap<String, String> m = new HashMap<>();
+                  try {
+                      ZipEntry e = z.getEntry(path);
+                      if (e == null) return m;
+                      XmlPullParser p = pp(z.getInputStream(e));
+                      for (int t = p.getEventType(); t != ED; t = p.next()) if (t == ST && local(p.getName()).equals("Relationship")) m.put(at(p, "Id"), at(p, "Target"));
+                  } catch (Exception x) { }
+                  return m;
+              }
+
+              static String res(String base, String t) {
+                  if (t.startsWith("/")) return t.substring(1);
+                  while (t.startsWith("../")) { t = t.substring(3); base = base.substring(0, base.lastIndexOf('/', base.length() - 2) + 1); }
+                  return base + t;
+              }
+
+              // ---------- DOCX: paragraphs in a virtualized list ----------
+              void showDoc(File f) {
+                  load(f, z -> {
+                      ArrayList<CharSequence> out = new ArrayList<>();
+                      docx(z, out);
+                      if (out.isEmpty()) out.add("This document has no text.");
+                      return () -> docView(f, out);
+                  });
+              }
+
+              void docView(File f, ArrayList<CharSequence> ps) {
+                  ListView lv = new ListView(this);
+                  lv.setDividerHeight(0);
+                  lv.setBackground(rect(CARD, dp(14)));
+                  lv.setPadding(dp(16), dp(12), dp(16), dp(24));
+                  lv.setClipToPadding(false);
+                  lv.setFastScrollEnabled(true);
+                  lv.setSelector(new ColorDrawable(0));
+                  lv.setAdapter(new BaseAdapter() {
+                      public int getCount() { return ps.size(); }
+                      public Object getItem(int i) { return null; }
+                      public long getItemId(int i) { return i; }
+                      public View getView(int i, View v, ViewGroup g) {
+                          TextView t = (TextView) v;
+                          if (t == null) {
+                              t = tv("", 16, TX, false);
+                              t.setLineSpacing(dp(4), 1f);
+                              t.setPadding(0, dp(5), 0, dp(5));
+                              t.setLayoutParams(new AbsListView.LayoutParams(-1, -2));
+                          }
+                          t.setText(ps.get(i));
+                          return t;
+                      }
+                  });
+                  FrameLayout fl = new FrameLayout(this);
+                  fl.setPadding(dp(8), dp(8), dp(8), 0);
+                  fl.addView(lv);
+                  viewer(f.getName(), fl);
+              }
+
+              void docx(ZipFile z, ArrayList<CharSequence> out) throws Exception {
+                  XmlPullParser p = pp(z.getInputStream(z.getEntry("word/document.xml")));
+                  SpannableStringBuilder c = new SpannableStringBuilder();
+                  boolean b = false, it = false, bu = false;
+                  int tbl = 0, hd = 0;
+                  for (int t = p.getEventType(); t != ED && out.size() < 30000; t = p.next()) {
+                      if (t == ST) {
+                          String n = local(p.getName());
+                          switch (n) {
+                              case "tbl": tbl++; break;
+                              case "r": b = false; it = false; break;
+                              case "b": b = !"0".equals(ln(p, "val")) && !"false".equals(ln(p, "val")); break;
+                              case "i": it = !"0".equals(ln(p, "val")) && !"false".equals(ln(p, "val")); break;
+                              case "numPr": bu = true; break;
+                              case "pStyle": {
+                                  String v = String.valueOf(ln(p, "val")), dg = v.replaceAll("\\D", "");
+                                  if (v.startsWith("Heading") || v.equals("Title")) hd = dg.isEmpty() ? 1 : Integer.parseInt(dg);
+                                  break;
+                              }
+                              case "tab": c.append('\t'); break;
+                              case "br": c.append('\n'); break;
+                              case "t": {
+                                  int s = c.length();
+                                  c.append(p.nextText());
+                                  if (b) c.setSpan(new StyleSpan(Typeface.BOLD), s, c.length(), X);
+                                  if (it) c.setSpan(new StyleSpan(Typeface.ITALIC), s, c.length(), X);
+                                  break;
+                              }
+                          }
+                      } else if (t == ET) {
+                          String n = local(p.getName());
+                          if (n.equals("p")) {
+                              if (tbl > 0) { c.append(' '); hd = 0; bu = false; }
+                              else {
+                                  if (hd > 0 && c.length() > 0) {
+                                      c.setSpan(new AbsoluteSizeSpan(hd == 1 ? 26 : hd == 2 ? 22 : 19, true), 0, c.length(), X);
+                                      c.setSpan(new StyleSpan(Typeface.BOLD), 0, c.length(), X);
+                                  }
+                                  if (bu && c.length() > 0) c.insert(0, "\u2022 ");
+                                  if (c.length() > 0) out.add(c);
+                                  c = new SpannableStringBuilder();
+                                  hd = 0;
+                                  bu = false;
+                              }
+                          } else if (n.equals("tc")) c.append("  \u2502  ");
+                          else if (n.equals("tr")) { if (c.length() > 0) out.add(c); c = new SpannableStringBuilder(); }
+                          else if (n.equals("tbl")) tbl--;
+                      }
+                  }
+              }
+
+              // ---------- XLSX: real grid, sheet tabs, virtualized rows ----------
+              void showSheet(File f) {
+                  load(f, z -> {
+                      ArrayList<String> nm = sheetNames(z);
+                      ArrayList<String[]> rs = rows(z, 0);
+                      return () -> sheetView(f, nm, rs, 0);
+                  });
+              }
+
+              ArrayList<String> sheetNames(ZipFile z) throws Exception {
+                  ArrayList<String> l = new ArrayList<>();
+                  ZipEntry e = z.getEntry("xl/workbook.xml");
+                  if (e != null) {
+                      XmlPullParser p = pp(z.getInputStream(e));
+                      for (int t = p.getEventType(); t != ED; t = p.next()) if (t == ST && local(p.getName()).equals("sheet")) l.add(String.valueOf(at(p, "name")));
+                  }
+                  return l;
+              }
+
+              ArrayList<String[]> rows(ZipFile z, int idx) throws Exception {
+                  ArrayList<String> ss = new ArrayList<>();
+                  ZipEntry e = z.getEntry("xl/sharedStrings.xml");
+                  if (e != null) {
+                      XmlPullParser p = pp(z.getInputStream(e));
+                      StringBuilder c = new StringBuilder();
+                      for (int t = p.getEventType(); t != ED && ss.size() < 500000; t = p.next()) {
+                          if (t == ST) {
+                              String n = local(p.getName());
+                              if (n.equals("si")) c.setLength(0);
+                              else if (n.equals("t")) c.append(p.nextText());
+                          } else if (t == ET && local(p.getName()).equals("si")) ss.add(c.length() > 150 ? c.substring(0, 150) : c.toString());
+                      }
+                  }
+                  ArrayList<String> files = new ArrayList<>();
+                  for (Enumeration<? extends ZipEntry> en = z.entries(); en.hasMoreElements(); ) {
+                      String n = en.nextElement().getName();
+                      if (n.matches("xl/worksheets/sheet\\d+\\.xml")) files.add(n);
+                  }
+                  Collections.sort(files, (a, b) -> num(a) - num(b));
+                  ArrayList<String[]> out = new ArrayList<>();
+                  if (files.isEmpty()) return out;
+                  XmlPullParser p = pp(z.getInputStream(z.getEntry(files.get(Math.min(idx, files.size() - 1)))));
+                  ArrayList<String> row = new ArrayList<>();
+                  String typ = "";
+                  int col = 0;
+                  for (int t = p.getEventType(); t != ED && out.size() < 5000; t = p.next()) {
+                      if (t == ST) {
+                          String n = local(p.getName());
+                          if (n.equals("row")) {
+                              row.clear();
+                              String rn = at(p, "r");
+                              if (rn != null) while (out.size() < Integer.parseInt(rn) - 1 && out.size() < 5000) out.add(new String[0]);
+                          } else if (n.equals("c")) {
+                              typ = String.valueOf(at(p, "t"));
+                              String r = at(p, "r");
+                              col = row.size();
+                              if (r != null) {
+                                  int cc = 0;
+                                  for (int i = 0; i < r.length() && r.charAt(i) >= 'A' && r.charAt(i) <= 'Z'; i++) cc = cc * 26 + r.charAt(i) - 'A' + 1;
+                                  if (cc > 0) col = cc - 1;
+                              }
+                          } else if (n.equals("v") || n.equals("t")) {
+                              String v = p.nextText();
+                              if (typ.equals("s") && n.equals("v")) try { v = ss.get(Integer.parseInt(v.trim())); } catch (Exception x) { }
+                              if (v.length() > 150) v = v.substring(0, 150);
+                              if (col < 60) {
+                                  while (row.size() <= col) row.add("");
+                                  row.set(col, row.get(col) + v);
+                              }
+                          }
+                      } else if (t == ET && local(p.getName()).equals("row")) out.add(row.toArray(new String[0]));
+                  }
+                  return out;
+              }
+
+              static String colName(int c) {
+                  String s = "";
+                  for (c++; c > 0; c = (c - 1) / 26) s = (char) ('A' + (c - 1) % 26) + s;
+                  return s;
+              }
+
+              static boolean isNum(String s) {
+                  if (s.isEmpty()) return false;
+                  char c = s.charAt(0);
+                  if (!(c >= '0' && c <= '9' || c == '-' || c == '.')) return false;
+                  try { Double.parseDouble(s); return true; } catch (Exception e) { return false; }
+              }
+
+              TextView cell(boolean head) {
+                  TextView t = tv("", 13, head ? SUB : TX, head);
+                  t.setSingleLine();
+                  t.setEllipsize(TextUtils.TruncateAt.END);
+                  t.setPadding(dp(8), 0, dp(8), 0);
+                  t.setGravity(head ? Gravity.CENTER : Gravity.CENTER_VERTICAL);
+                  if (head) t.setBackgroundColor(dark ? 0xFF232834 : 0xFFF0F2F7);
+                  return t;
+              }
+
+              void sheetView(File f, ArrayList<String> nm, ArrayList<String[]> rows, int idx) {
+                  int m = 1;
+                  for (String[] r : rows) m = Math.max(m, r.length);
+                  final int mc = m, cw = dp(110), rh = dp(40), hw = dp(46), tw = hw + cw * mc;
+                  GradientDrawable dv = new GradientDrawable();
+                  dv.setColor(LINE);
+                  dv.setSize(1, 1);
+                  LinearLayout hdr = new LinearLayout(this);
+                  hdr.setShowDividers(LinearLayout.SHOW_DIVIDER_MIDDLE | LinearLayout.SHOW_DIVIDER_END);
+                  hdr.setDividerDrawable(dv);
+                  for (int c = 0; c <= mc; c++) {
+                      TextView t = cell(true);
+                      if (c > 0) t.setText(colName(c - 1));
+                      hdr.addView(t, new LinearLayout.LayoutParams(c == 0 ? hw : cw, rh));
+                  }
+                  ListView lv = new ListView(this);
+                  lv.setDivider(dv);
+                  lv.setDividerHeight(1);
+                  lv.setBackgroundColor(CARD);
+                  lv.setFastScrollEnabled(true);
+                  lv.setAdapter(new BaseAdapter() {
+                      public int getCount() { return rows.size(); }
+                      public Object getItem(int i) { return null; }
+                      public long getItemId(int i) { return i; }
+                      public View getView(int i, View v, ViewGroup g) {
+                          LinearLayout r = (LinearLayout) v;
+                          if (r == null) {
+                              r = new LinearLayout(MainActivity.this);
+                              r.setShowDividers(LinearLayout.SHOW_DIVIDER_MIDDLE | LinearLayout.SHOW_DIVIDER_END);
+                              r.setDividerDrawable(dv);
+                              for (int c = 0; c <= mc; c++) r.addView(cell(c == 0), new LinearLayout.LayoutParams(c == 0 ? hw : cw, rh));
+                          }
+                          String[] row = rows.get(i);
+                          ((TextView) r.getChildAt(0)).setText(String.valueOf(i + 1));
+                          for (int c = 0; c < mc; c++) {
+                              String s = c < row.length && row[c] != null ? row[c] : "";
+                              TextView t = (TextView) r.getChildAt(c + 1);
+                              t.setText(s);
+                              t.setGravity(Gravity.CENTER_VERTICAL | (isNum(s) ? Gravity.RIGHT : Gravity.LEFT));
+                          }
+                          return r;
+                      }
+                  });
+                  LinearLayout colm = new LinearLayout(this);
+                  colm.setOrientation(LinearLayout.VERTICAL);
+                  colm.addView(hdr, new LinearLayout.LayoutParams(tw, rh));
+                  colm.addView(lv, new LinearLayout.LayoutParams(tw, 0, 1));
+                  HorizontalScrollView hs = new HorizontalScrollView(this);
+                  hs.setFillViewport(true);
+                  hs.addView(colm, new FrameLayout.LayoutParams(tw, -1));
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.addView(hs, new LinearLayout.LayoutParams(-1, 0, 1));
+                  if (nm.size() > 1) {
+                      LinearLayout tb = new LinearLayout(this);
+                      tb.setPadding(dp(8), dp(6), dp(8), dp(6));
+                      for (int k = 0; k < nm.size(); k++) {
+                          final int kk = k;
+                          TextView t = tv(nm.get(k), 14, k == idx ? Color.WHITE : SUB, true);
+                          t.setPadding(dp(16), dp(8), dp(16), dp(8));
+                          if (k == idx) t.setBackground(grad(dp(16)));
+                          t.setOnClickListener(x -> load(f, z -> { ArrayList<String[]> rr = rows(z, kk); return () -> sheetView(f, nm, rr, kk); }));
+                          tb.addView(t);
+                      }
+                      HorizontalScrollView ts = new HorizontalScrollView(this);
+                      ts.setBackgroundColor(CARD);
+                      ts.addView(tb);
+                      box.addView(ts);
+                  }
+                  viewer(f.getName(), box);
+              }
+
+              // ---------- PPTX: slide-by-slide viewer ----------
+              void showDeck(File f) {
+                  load(f, z -> {
+                      deckZip = z;
+                      Deck d = deck(z);
+                      return () -> deckView(f, d);
+                  });
+              }
+
+              Deck deck(ZipFile z) throws Exception {
+                  Deck d = new Deck();
+                  XmlPullParser p = pp(z.getInputStream(z.getEntry("ppt/presentation.xml")));
+                  ArrayList<String> ids = new ArrayList<>();
+                  for (int t = p.getEventType(); t != ED; t = p.next()) if (t == ST) {
+                      String n = local(p.getName());
+                      if (n.equals("sldSz")) { d.sw = Integer.parseInt(ln(p, "cx")); d.sh = Integer.parseInt(ln(p, "cy")); }
+                      else if (n.equals("sldId")) ids.add(at(p, "r:id"));
+                  }
+                  HashMap<String, String> rl = rels(z, "ppt/_rels/presentation.xml.rels");
+                  for (String id : ids) { String tg = rl.get(id); if (tg != null) d.sl.add(res("ppt/", tg)); }
+                  if (d.sl.isEmpty()) {
+                      for (Enumeration<? extends ZipEntry> en = z.entries(); en.hasMoreElements(); ) {
+                          String n = en.nextElement().getName();
+                          if (n.matches("ppt/slides/slide\\d+\\.xml")) d.sl.add(n);
+                      }
+                      Collections.sort(d.sl, (a, b) -> num(a) - num(b));
+                  }
+                  return d;
+              }
+
+              Sld slide(ZipFile z, String path) throws Exception {
+                  Sld s = new Sld();
+                  Sh cur = null;
+                  Pa pa = null;
+                  boolean inBg = false, inR = false;
+                  int sl = path.lastIndexOf('/') + 1;
+                  String base = path.substring(0, sl);
+                  HashMap<String, String> rl = rels(z, base + "_rels/" + path.substring(sl) + ".rels");
+                  XmlPullParser p = pp(z.getInputStream(z.getEntry(path)));
+                  for (int t = p.getEventType(); t != ED; t = p.next()) {
+                      if (t == ST) {
+                          String n = local(p.getName());
+                          switch (n) {
+                              case "bg": inBg = true; break;
+                              case "sp": case "pic": case "graphicFrame": cur = new Sh(); cur.pic = n.equals("pic"); break;
+                              case "ph": if (cur != null) { cur.ph = ln(p, "type"); if (cur.ph == null) cur.ph = "body"; } break;
+                              case "off": if (cur != null && ln(p, "x") != null) { cur.x = fl(ln(p, "x")); cur.y = fl(ln(p, "y")); } break;
+                              case "ext": if (cur != null && ln(p, "cx") != null) { cur.w = fl(ln(p, "cx")); cur.h = fl(ln(p, "cy")); } break;
+                              case "blip": if (cur != null) cur.rid = ln(p, "embed"); break;
+                              case "p": if (cur != null && !cur.pic) { pa = new Pa(); cur.ps.add(pa); } break;
+                              case "pPr":
+                                  if (pa != null) {
+                                      String a = ln(p, "algn");
+                                      pa.set = a != null;
+                                      if (a != null) pa.al = a.equals("ctr") ? Layout.Alignment.ALIGN_CENTER : a.equals("r") ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
+                                  }
+                                  break;
+                              case "buChar": if (pa != null) pa.bu = true; break;
+                              case "rPr":
+                                  inR = true;
+                                  if (pa != null) {
+                                      String sz = ln(p, "sz");
+                                      if (sz != null && pa.pt == 0) pa.pt = Integer.parseInt(sz) / 100f;
+                                      if ("1".equals(ln(p, "b"))) pa.b = true;
+                                  }
+                                  break;
+                              case "srgbClr": {
+                                  String v = ln(p, "val");
+                                  if (v != null) {
+                                      int c = 0xFF000000 | Integer.parseInt(v, 16);
+                                      if (inBg) s.bg = c; else if (inR && pa != null && pa.col == 0) pa.col = c;
+                                  }
+                                  break;
+                              }
+                              case "t": if (pa != null) pa.t += p.nextText(); break;
+                              case "br": if (pa != null) pa.t += "\n"; break;
+                          }
+                      } else if (t == ET) {
+                          String n = local(p.getName());
+                          if (n.equals("rPr")) inR = false;
+                          else if (n.equals("bg")) inBg = false;
+                          else if (n.equals("sp") || n.equals("pic") || n.equals("graphicFrame")) { if (cur != null) s.sh.add(cur); cur = null; pa = null; }
+                      }
+                  }
+                  for (Sh h : s.sh) if (h.rid != null && rl.get(h.rid) != null) h.bm = bmp(z, z.getEntry(res(base, rl.get(h.rid))));
+                  return s;
+              }
+
+              static Bitmap bmp(ZipFile z, ZipEntry e) {
+                  if (e == null) return null;
+                  try {
+                      BitmapFactory.Options o = new BitmapFactory.Options();
+                      o.inJustDecodeBounds = true;
+                      try (InputStream in = z.getInputStream(e)) { BitmapFactory.decodeStream(in, null, o); }
+                      int sm = 1;
+                      while (Math.max(o.outWidth, o.outHeight) / sm > 1024) sm *= 2;
+                      o = new BitmapFactory.Options();
+                      o.inSampleSize = sm;
+                      try (InputStream in = z.getInputStream(e)) { return BitmapFactory.decodeStream(in, null, o); }
+                  } catch (Throwable x) { return null; }
+              }
+
+              void deckView(File f, Deck d) {
+                  dk = d;
+                  si = -1;
+                  sv = new SV(this, d);
+                  FrameLayout stage = new FrameLayout(this);
+                  stage.setBackgroundColor(dark ? 0xFF000000 : 0xFFDDE1EA);
+                  stage.setPadding(dp(8), dp(8), dp(8), dp(8));
+                  stage.addView(sv, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+                  LinearLayout nav = new LinearLayout(this);
+                  nav.setGravity(Gravity.CENTER);
+                  nav.setBackgroundColor(CARD);
+                  TextView pv = tv("\u25C0", 22, A1, true), nx = tv("\u25B6", 22, A1, true);
+                  pv.setPadding(dp(28), dp(12), dp(28), dp(12));
+                  nx.setPadding(dp(28), dp(12), dp(28), dp(12));
+                  cnt = tv("", 15, TX, true);
+                  pv.setOnClickListener(x -> go(si - 1));
+                  nx.setOnClickListener(x -> go(si + 1));
+                  nav.addView(pv);
+                  nav.addView(cnt);
+                  nav.addView(nx);
+                  GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+                      @Override public boolean onDown(MotionEvent e) { return true; }
+                      @Override public boolean onFling(MotionEvent a, MotionEvent b, float vx, float vy) {
+                          if (Math.abs(vx) > 600) go(si + (vx < 0 ? 1 : -1));
+                          return true;
+                      }
+                  });
+                  stage.setOnTouchListener((x, ev) -> gd.onTouchEvent(ev));
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1));
+                  box.addView(nav);
+                  viewer(f.getName(), box);
+                  go(0);
+              }
+
+              void go(int i) {
+                  if (dk == null || i < 0 || i >= dk.sl.size()) return;
+                  si = i;
+                  cnt.setText((i + 1) + " / " + dk.sl.size());
+                  final Deck d = dk;
+                  final ZipFile z = deckZip;
+                  new Thread(() -> {
+                      Sld s = null;
+                      try { s = slide(z, d.sl.get(i)); } catch (Throwable x) { }
+                      final Sld fs = s;
+                      runOnUiThread(() -> { if (si == i && dk == d) sv.set(fs); });
+                  }).start();
+              }
+
+              class SV extends View {
+                  Deck d;
+                  Sld s;
+                  TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+
+                  SV(Context c, Deck d) { super(c); this.d = d; }
+
+                  @Override protected void onMeasure(int wm, int hm) {
+                      int w = MeasureSpec.getSize(wm), h = MeasureSpec.getSize(hm);
+                      if (h > 0 && (long) w * d.sh / d.sw > h) w = (int) ((long) h * d.sw / d.sh);
+                      setMeasuredDimension(w, (int) ((long) w * d.sh / d.sw));
+                  }
+
+                  @Override protected void onSizeChanged(int w, int h, int ow, int oh) { prep(); }
+
+                  void set(Sld n) { s = n; prep(); invalidate(); }
+
+                  float[] box(Sh h) {
+                      if (h.w > 0 && h.h > 0) return new float[]{h.x, h.y, h.w, h.h};
+                      if (h.pic) return null;
+                      String t = String.valueOf(h.ph);
+                      float W = d.sw, H = d.sh;
+                      if (t.equals("sldNum") || t.equals("dt") || t.equals("ftr")) return null;
+                      if (t.equals("title") || t.equals("ctrTitle")) return new float[]{.08f * W, .06f * H, .84f * W, .22f * H};
+                      if (t.equals("subTitle")) return new float[]{.08f * W, .32f * H, .84f * W, .2f * H};
+                      return new float[]{.08f * W, .3f * H, .84f * W, .6f * H};
+                  }
+
+                  void prep() {
+                      if (s == null || getWidth() == 0) return;
+                      float k = getWidth() / (float) d.sw;
+                      int def = lum(s.bg) < 128 ? Color.WHITE : 0xFF222222;
+                      for (Sh h : s.sh) {
+                          h.lay = null;
+                          float[] r = box(h);
+                          if (r == null || h.bm != null || h.ps.isEmpty()) continue;
+                          SpannableStringBuilder sb = new SpannableStringBuilder();
+                          for (Pa a : h.ps) {
+                              int st = sb.length();
+                              float pt = a.pt > 0 ? a.pt : "title".equals(h.ph) ? 36 : "ctrTitle".equals(h.ph) ? 44 : "subTitle".equals(h.ph) ? 24 : 18;
+                              boolean ctr = !a.set && ("ctrTitle".equals(h.ph) || "subTitle".equals(h.ph));
+                              if ((a.bu || "body".equals(h.ph)) && a.t.length() > 0) sb.append("\u2022 ");
+                              sb.append(a.t).append('\n');
+                              int en = sb.length();
+                              sb.setSpan(new AbsoluteSizeSpan(Math.max(4, Math.round(pt * 12700 * k)), false), st, en, X);
+                              if (a.b || (h.ph != null && h.ph.endsWith("itle"))) sb.setSpan(new StyleSpan(Typeface.BOLD), st, en, X);
+                              sb.setSpan(new ForegroundColorSpan(a.col != 0 ? a.col : def), st, en, X);
+                              sb.setSpan(new AlignmentSpan.Standard(ctr ? Layout.Alignment.ALIGN_CENTER : a.al), st, en, X);
+                          }
+                          h.lay = StaticLayout.Builder.obtain(sb, 0, sb.length(), tp, Math.max(1, Math.round(r[2] * k))).build();
+                      }
+                  }
+
+                  @Override protected void onDraw(Canvas c) {
+                      if (s == null) return;
+                      float k = getWidth() / (float) d.sw;
+                      c.drawColor(s.bg);
+                      for (Sh h : s.sh) {
+                          float[] r = box(h);
+                          if (r == null) continue;
+                          if (h.bm != null) c.drawBitmap(h.bm, null, new RectF(r[0] * k, r[1] * k, (r[0] + r[2]) * k, (r[1] + r[3]) * k), tp);
+                          else if (h.lay != null) { c.save(); c.translate(r[0] * k, r[1] * k); h.lay.draw(c); c.restore(); }
+                      }
+                  }
+              }
+          }
+          EOF
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+      - name: Name the APK
+        run: mv app/build/outputs/apk/debug/app-debug.apk PDXP.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pdxp-${{ github.run_number }}
+          name: PDXP build ${{ github.run_number }}
+          files: PDXP.apk
